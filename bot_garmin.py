@@ -1,86 +1,54 @@
 import os
 import logging
 import json
+import requests
 from datetime import date, timedelta, datetime, time, timezone
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from garminconnect import Garmin
 import anthropic
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL")
-GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD")
 TELEGRAM_USER_ID = int(os.environ.get("TELEGRAM_USER_ID", "5063997331"))
+GARMIN_MCP_URL = "https://garmin-mcp-server-production.up.railway.app"
 
 logging.basicConfig(level=logging.INFO)
 
-# Almacenamiento en memoria (se mantiene mientras Railway no reinicie)
 AGENDA = []
 NOTAS = []
 
 SYSTEM_PROMPT = """Eres OMS-24, el asistente personal de Óscar. Eres inteligente, directo y útil en cualquier tema.
 
-Tienes acceso a los datos de Garmin de Óscar en tiempo real: actividades, sueño, pasos, frecuencia cardíaca, body battery, estrés, VO2 max, récords personales.
+Tienes acceso COMPLETO a todos los datos de Garmin de Óscar: cualquier métrica, cualquier fecha histórica, actividades, sueño, pulso, body battery, estrés, VO2 max, récords personales, hidratación, pasos.
 
-También gestionas su agenda personal y sus notas.
+También gestionas su agenda y notas personales.
 
-COMANDOS QUE PUEDES USAR EN TU RESPUESTA:
-- Si el usuario quiere guardar una cita escribe al final: [GUARDAR_CITA: fecha|hora|descripcion]
-- Si el usuario quiere guardar una nota escribe al final: [GUARDAR_NOTA: texto]
-
-Puedes ayudar con cualquier cosa: entrenamiento, salud, tecnología, cocina, viajes, redactar textos, cálculos, preguntas generales.
+COMANDOS:
+- Para guardar cita escribe al final: [GUARDAR_CITA: fecha|hora|descripcion]
+- Para guardar nota escribe al final: [GUARDAR_NOTA: texto]
 
 Responde siempre en español, de forma clara y directa."""
 
 
-def get_garmin_data():
+def get_garmin_data(query=None):
+    """Obtiene datos del garmin-mcp-server"""
     try:
-        client = Garmin(GARMIN_EMAIL, GARMIN_PASSWORD)
-        try:
-            client.login(tokenstore="~/.garth")
-        except:
-            client.login()
-            client.garth.dump("~/.garth")
-
-        today = date.today().isoformat()
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
-        data = {}
-
-        try:
-            data['pasos_hoy'] = client.get_steps_data(today)
-        except:
-            data['pasos_hoy'] = "No disponible"
-        try:
-            data['sueno_anoche'] = client.get_sleep_data(yesterday)
-        except:
-            data['sueno_anoche'] = "No disponible"
-        try:
-            data['frecuencia_cardiaca'] = client.get_heart_rates(today)
-        except:
-            data['frecuencia_cardiaca'] = "No disponible"
-        try:
-            data['actividades_recientes'] = client.get_activities(0, 30)
-        except:
-            data['actividades_recientes'] = []
-        try:
-            data['body_battery'] = client.get_body_battery(today)
-        except:
-            data['body_battery'] = "No disponible"
-        try:
-            data['estres'] = client.get_stress_data(today)
-        except:
-            data['estres'] = "No disponible"
-        try:
-            data['vo2max'] = client.get_max_metrics(today)
-        except:
-            data['vo2max'] = "No disponible"
-        try:
-            data['records'] = client.get_personal_record()
-        except:
-            data['records'] = "No disponible"
-
-        return data
+        # Llamada al servidor MCP con la consulta del usuario
+        payload = {
+            "query": query or "dame un resumen completo de hoy",
+            "date": date.today().isoformat()
+        }
+        response = requests.post(
+            f"{GARMIN_MCP_URL}/query",
+            json=payload,
+            timeout=30
+        )
+        if response.status_code == 200:
+            return response.json()
+        else:
+            # Fallback: pedir datos básicos
+            response = requests.get(f"{GARMIN_MCP_URL}/health", timeout=10)
+            return {"status": "conectado", "detalle": response.text[:500]}
     except Exception as e:
         return {"error": str(e)}
 
@@ -122,25 +90,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_message = update.message.text
-    await update.message.reply_text("⏳ Procesando...")
+    await update.message.reply_text("⏳ Consultando datos...")
 
-    garmin_data = get_garmin_data()
-    agenda_texto = json.dumps(AGENDA, ensure_ascii=False) if AGENDA else "Sin citas guardadas"
-    notas_texto = json.dumps(NOTAS, ensure_ascii=False) if NOTAS else "Sin notas guardadas"
+    garmin_data = get_garmin_data(user_message)
+    agenda_texto = json.dumps(AGENDA, ensure_ascii=False) if AGENDA else "Sin citas"
+    notas_texto = json.dumps(NOTAS, ensure_ascii=False) if NOTAS else "Sin notas"
 
     context_message = f"""
 El usuario dice: {user_message}
 
-Fecha y hora actual (España): {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")} UTC
+Fecha y hora actual: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")} UTC
 
-Datos de Garmin:
-{json.dumps(garmin_data, ensure_ascii=False, default=str)[:3000]}
+Datos de Garmin (via servidor MCP):
+{json.dumps(garmin_data, ensure_ascii=False, default=str)[:4000]}
 
-Agenda:
-{agenda_texto}
-
-Notas:
-{notas_texto}
+Agenda: {agenda_texto}
+Notas: {notas_texto}
 """
 
     try:
@@ -161,16 +126,18 @@ Notas:
 
 async def informe_matutino(context):
     try:
-        garmin_data = get_garmin_data()
+        garmin_data = get_garmin_data("resumen matutino completo")
         claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         response = claude.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=500,
-            system="Eres OMS-24. Genera un informe matutino breve y motivador en español con los datos de Garmin.",
-            messages=[{"role": "user", "content": f"Datos Garmin de Óscar: {json.dumps(garmin_data, ensure_ascii=False, default=str)[:2000]}"}]
+            system="Eres OMS-24. Genera un informe matutino breve y motivador en español.",
+            messages=[{"role": "user", "content": f"Datos Garmin: {json.dumps(garmin_data, ensure_ascii=False, default=str)[:2000]}"}]
         )
-        texto = f"🌅 Buenos días Óscar!\n\n{response.content[0].text}"
-        await context.bot.send_message(chat_id=TELEGRAM_USER_ID, text=texto)
+        await context.bot.send_message(
+            chat_id=TELEGRAM_USER_ID,
+            text=f"🌅 Buenos días Óscar!\n\n{response.content[0].text}"
+        )
     except Exception as e:
         logging.error(f"Error informe matutino: {e}")
 
@@ -179,7 +146,7 @@ def main():
     print("🤖 Bot iniciando...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Informe matutino a las 8:00 hora España (UTC+2 verano = 6:00 UTC)
+    # Informe matutino 8:00 España (6:00 UTC verano)
     hora_utc = time(hour=6, minute=0, tzinfo=timezone.utc)
     app.job_queue.run_daily(informe_matutino, time=hora_utc)
 
