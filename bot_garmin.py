@@ -37,34 +37,78 @@ Responde siempre en español, de forma clara y directa. Si tienes datos de Garmi
 def get_garmin_data():
     try:
         client = Garmin(GARMIN_EMAIL, GARMIN_PASSWORD)
-        # Intenta cargar sesión guardada primero
         try:
             client.login(tokenstore="~/.garth")
         except:
             client.login()
-            client.garth.dump("~/.garth")  # Guarda sesión para la próxima vez
-        
+            client.garth.dump("~/.garth")
+
         today = date.today().isoformat()
         yesterday = (date.today() - timedelta(days=1)).isoformat()
-        
+        hace_30_dias = (date.today() - timedelta(days=30)).isoformat()
+
         data = {}
+
+        # Pasos
         try:
             data['pasos_hoy'] = client.get_steps_data(today)
         except:
             data['pasos_hoy'] = "No disponible"
+
+        # Sueño
         try:
-            data['sueno'] = client.get_sleep_data(yesterday)
+            data['sueno_anoche'] = client.get_sleep_data(yesterday)
         except:
-            data['sueno'] = "No disponible"
+            data['sueno_anoche'] = "No disponible"
+
+        # Frecuencia cardíaca
         try:
-            data['frecuencia_cardiaca'] = client.get_heart_rates(today)
+            data['frecuencia_cardiaca_hoy'] = client.get_heart_rates(today)
         except:
-            data['frecuencia_cardiaca'] = "No disponible"
+            data['frecuencia_cardiaca_hoy'] = "No disponible"
+
+        # Últimas 30 actividades
         try:
-            actividades = client.get_activities(0, 10)
-            data['actividades_recientes'] = actividades if actividades else []
+            data['actividades_recientes'] = client.get_activities(0, 30)
         except:
             data['actividades_recientes'] = []
+
+        # Estadísticas últimos 30 días
+        try:
+            data['stats_30_dias'] = client.get_stats_and_body(today)
+        except:
+            data['stats_30_dias'] = "No disponible"
+
+        # Body battery
+        try:
+            data['body_battery'] = client.get_body_battery(today)
+        except:
+            data['body_battery'] = "No disponible"
+
+        # Estrés
+        try:
+            data['estres_hoy'] = client.get_stress_data(today)
+        except:
+            data['estres_hoy'] = "No disponible"
+
+        # VO2 Max
+        try:
+            data['vo2max'] = client.get_max_metrics(today)
+        except:
+            data['vo2max'] = "No disponible"
+
+        # Récords personales
+        try:
+            data['records_personales'] = client.get_personal_record()
+        except:
+            data['records_personales'] = "No disponible"
+
+        # Hidratación
+        try:
+            data['hidratacion'] = client.get_hydration_data(today)
+        except:
+            data['hidratacion'] = "No disponible"
+
         return data
     except Exception as e:
         return {"error": str(e)}
