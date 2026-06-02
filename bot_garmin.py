@@ -53,10 +53,10 @@ def get_garmin_data():
         except:
             data['frecuencia_cardiaca'] = "No disponible"
         try:
-            actividades = client.get_activities(0, 1)
-            data['ultima_actividad'] = actividades[0] if actividades else "Sin actividades recientes"
+        actividades = client.get_activities(0, 10)
+            data['actividades_recientes'] = actividades if actividades else []
         except:
-            data['ultima_actividad'] = "No disponible"
+    data['actividades_recientes'] = []
             
         return data
     except Exception as e:
